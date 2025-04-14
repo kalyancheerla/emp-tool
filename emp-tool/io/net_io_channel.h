@@ -23,6 +23,8 @@ namespace emp {
   @{
  */
 
+enum CommOpType { NONE, SEND, RECV };
+
 class NetIO: public IOChannel<NetIO> { public:
 	bool is_server;
 	int mysocket = -1;
@@ -34,6 +36,8 @@ class NetIO: public IOChannel<NetIO> { public:
 	int port;
 	uint64_t counter = 0;
 	uint64_t num_bytes_sent;
+	CommOpType previous_op = NONE;
+	uint64_t comm_rounds = 0;
 	NetIO(const char * address, int port, bool quiet = false) {
 		this->port = port;
 		is_server = (address == nullptr);
@@ -44,7 +48,7 @@ class NetIO: public IOChannel<NetIO> { public:
 			memset(&serv, 0, sizeof(serv));
 			serv.sin_family = AF_INET;
 			serv.sin_addr.s_addr = htonl(INADDR_ANY); /* set our address to any interface */
-			serv.sin_port = htons(port);           /* set the server port number */    
+			serv.sin_port = htons(port);           /* set the server port number */
 			mysocket = socket(AF_INET, SOCK_STREAM, 0);
 			int reuse = 1;
 			setsockopt(mysocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
@@ -61,7 +65,7 @@ class NetIO: public IOChannel<NetIO> { public:
 		}
 		else {
 			addr = string(address);
-			
+
 			struct sockaddr_in dest;
 			memset(&dest, 0, sizeof(dest));
 			dest.sin_family = AF_INET;
@@ -74,7 +78,7 @@ class NetIO: public IOChannel<NetIO> { public:
 				if (connect(consocket, (struct sockaddr *)&dest, sizeof(struct sockaddr)) == 0) {
 					break;
 				}
-				
+
 				close(consocket);
 				usleep(1000);
 			}
@@ -126,6 +130,9 @@ class NetIO: public IOChannel<NetIO> { public:
 	void send_data(const void * data, int len) {
 		counter += len;
 		num_bytes_sent += len;
+		if(previous_op == RECV)
+			comm_rounds++;
+		previous_op = SEND;
 		int sent = 0;
 		while(sent < len) {
 			int res = fwrite(sent + (char*)data, 1, len - sent, stream);
@@ -141,12 +148,15 @@ class NetIO: public IOChannel<NetIO> { public:
 		if(has_sent)
 			fflush(stream);
 		has_sent = false;
+		if(previous_op == SEND)
+			comm_rounds++;
+		previous_op = RECV;
 		int sent = 0;
 		while(sent < len) {
 			int res = fread(sent + (char*)data, 1, len - sent, stream);
 			if (res >= 0)
 				sent += res;
-			else 
+			else
 				fprintf(stderr,"error: net_send_data %d\n", res);
 		}
 	}
@@ -162,10 +172,12 @@ using boost::asio::ip::tcp;
 
 namespace emp {
 
+enum CommOpType { NONE, SEND, RECV };
+
 /** @addtogroup IO
   @{
  */
-class NetIO: public IOChannel<NetIO> { 
+class NetIO: public IOChannel<NetIO> {
 public:
 	bool is_server;
 	string addr;
@@ -178,6 +190,8 @@ public:
 	boost::asio::io_service io_service;
 	tcp::socket s = tcp::socket(io_service);
 	uint64_t num_bytes_sent;
+	CommOpType previous_op = NONE;
+	uint64_t comm_rounds = 0;
 	NetIO(const char * address, int port, bool quiet = false) {
 		this->port = port;
 		is_server = (address == nullptr);
@@ -234,6 +248,9 @@ public:
 	void send_data(const void * data, int len) {
 		counter += len;
 		num_bytes_sent += len;
+		if(previous_op == RECV)
+			comm_rounds++;
+		previous_op = SEND;
 		if (len >= buffer_cap) {
 			if(has_send) {
 				flush();
@@ -251,6 +268,9 @@ public:
 
 	void recv_data(void  * data, int len) {
 		int sent = 0;
+		if(previous_op == SEND)
+			comm_rounds++;
+		previous_op = RECV;
 		if(has_send) {
 			flush();
 		}
@@ -259,7 +279,7 @@ public:
 			int res = s.read_some(boost::asio::buffer(sent + (char *)data, len - sent));
 			if (res >= 0)
 				sent += res;
-			else 
+			else
 				fprintf(stderr,"error: net_send_data %d\n", res);
 		}
 	}
